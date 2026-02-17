@@ -155,7 +155,7 @@ def process_arrival(station: dict, client_raw: dict, current_time: int) -> None:
 
     service_time = calc_service_time(client_raw[ru.LITERS])
     new_client = {
-        ru.ARRIVAL_TIME: client_raw[ru.ARRIVAL_TIME],
+        ru.TIME: client_raw[ru.TIME],
         ru.LITERS: client_raw[ru.LITERS],
         ru.MARK: client_raw[ru.MARK],
         ru.SERVICE_TIME: service_time,
@@ -268,7 +268,7 @@ def log_departure(current_time: int, client: dict, dispenser: dict) -> None:
     """
 
     time_str = minutes_to_str(current_time)
-    arrival_str = minutes_to_str(client[ru.ARRIVAL_TIME])
+    arrival_str = minutes_to_str(client[ru.TIME])
     print(f"{ru.IN} {time_str} {ru.CLIENT} {arrival_str} {client[ru.MARK]} \
 {client[ru.LITERS]} {client[ru.SERVICE_TIME]} "
           f"{ru.DONE}")
