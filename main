@@ -1,0 +1,359 @@
+import math
+import random
+import ru_local_case133 as ru
+
+PRICES: dict[str, float] = {
+    ru.GS80: 45.0,
+    ru.GS92: 50.0,
+    ru.GS95: 55.0,
+    ru.GS98: 60.0
+}
+
+def load_stations(filename: str) -> list[dict]:
+
+    """
+    Uploads gas station data from a file.
+    Args:
+        filename (str): File name with configuration.
+    Returns:
+        list[dict]: List of dictionaries, each describes 1 gas machine.
+    """
+
+    dispensers = []
+    with open(filename, 'r', encoding='utf-8') as f:
+        for line in f:
+            parts = line.strip().split()
+            if not parts:
+                continue
+            num = int(parts[0])
+            max_q = int(parts[1])
+            marks = parts[2:]
+            disp = {
+                ru.NUM: num,
+                ru.MAX_QUEUE: max_q,
+                ru.MARKS: marks,
+                ru.QUEUE: [],
+                ru.CURRENT_CLIENT: None,
+                ru.END_TIME: None
+            }
+            dispensers.append(disp)
+    return dispensers
+
+
+def load_requests(filename: str) -> list[dict]:
+
+    """
+    Uploads requests from file.
+    Args:
+        filename (str): File name with requests.
+    Returns:
+        list[dict]: List of dictionaries of requests, sorted by time.
+    """
+
+    requests = []
+    with open(filename, 'r', encoding='utf-8') as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) < 3:
+                continue
+            time_str, liters_str, mark = parts[0], parts[1], parts[2]
+            h, m = map(int, time_str.split(':'))
+            time_minutes = h * 60 + m
+            liters = int(liters_str)
+            requests.append({ru.TIME: time_minutes, ru.LITERS: liters,
+                             ru.MARK: mark})
+    requests.sort(key=lambda x: x[ru.TIME])
+    return requests
+
+
+def calc_service_time(liters: int) -> int:
+
+    """
+    Counts the time of refill
+    Args:
+        liters (int).
+    Returns:
+        int: Time taken for a refill (min 1).
+    """
+
+    base = math.ceil(liters / 10)
+    delta = random.randint(-1, 1)
+    service_time = base + delta
+    if service_time < 1:
+        service_time = 1
+    return service_time
+
+
+def select_dispenser(dispensers: list[dict], mark: str) -> dict | None:
+
+    """
+    Chooses the best gas station for a refill.
+    Args:
+        dispensers (list[dict]).
+        mark (str): Needed fuel type.
+    Returns:
+        dict | None: Dictionary of the needed station, None, if nothing fits.
+    """
+
+    suitable = []
+    for d in dispensers:
+        if mark in d[ru.MARKS] and len(d[ru.QUEUE]) < d[ru.MAX_QUEUE]:
+            suitable.append(d)
+    if not suitable:
+        return None
+    return min(suitable, key=lambda d: len(d[ru.QUEUE]))
+
+
+def start_service(disp: dict, client: dict, current_time: int) -> None:
+
+    """
+    Starts the refill of a client
+    Args:
+        disp (dict).
+        client (dict).
+        current_time (int): Timestamp (in minutes).
+    Returns:
+        None
+    """
+
+    disp[ru.CURRENT_CLIENT] = client
+    disp[ru.END_TIME] = current_time + client[ru.SERVICE_TIME]
+    client[ru.START_TIME] = current_time
+
+
+def finish_service(disp: dict, current_time: int) -> dict:
+
+    """
+    Ends the refill service.
+    Args:
+        disp (dict).
+        current_time (int): Timestamp (in minutes).
+    Returns:
+        dict: Dictionary ending the refill service.
+    """
+
+    finished = disp[ru.CURRENT_CLIENT]
+    disp[ru.CURRENT_CLIENT] = None
+    disp[ru.END_TIME] = None
+    if disp[ru.QUEUE]:
+        next_client = disp[ru.QUEUE].pop(0)
+        start_service(disp, next_client, current_time)
+    return finished
+
+
+def process_arrival(station: dict, client_raw: dict, current_time: int) -> None:
+
+    """
+    Procedes the arrival of a new customer.
+    Args:
+        station (dict): Dictionary of the gas station current state.
+        client_raw (dict): Time, liters, mark.
+        current_time (int): Timestamp (in minutes).
+    Returns:
+        None
+    """
+
+    service_time = calc_service_time(client_raw[ru.LITERS])
+    new_client = {
+        ru.ARRIVAL_TIME: client_raw[ru.ARRIVAL_TIME],
+        ru.LITERS: client_raw[ru.LITERS],
+        ru.MARK: client_raw[ru.MARK],
+        ru.SERVICE_TIME: service_time,
+        ru.START_TIME: None
+    }
+
+    disp = select_dispenser(station[ru.DISPENSERS], client_raw[ru.MARK])
+
+    if disp is None:
+        station[ru.REJECTED] += 1
+        log_reject(current_time, new_client)
+        print_state(station[ru.DISPENSERS], current_time)
+        return
+
+    if disp[ru.CURRENT_CLIENT] is None:
+        start_service(disp, new_client, current_time)
+    else:
+        disp[ru.QUEUE].append(new_client)
+
+    log_arrival(current_time, new_client, disp)
+    print_state(station[ru.DISPENSERS], current_time)
+
+
+def process_departure(station: dict, disp: dict, current_time: int) -> None:
+
+    """
+    Procedes the departure of a new customer.
+    Args:
+        station (dict): Dictionary of the gas station current state.
+        client_raw (dict): Time, liters, mark.
+        current_time (int): Timestamp (in minutes).
+    Returns:
+        None
+    """
+
+    finished = finish_service(disp, current_time)
+
+    liters = finished[ru.LITERS]
+    mark = finished[ru.MARK]
+    station[ru.TOTAL_REVENUE] += liters * PRICES[mark]
+    station[ru.SOLD_LITERS][mark] += liters
+
+    log_departure(current_time, finished, disp)
+    print_state(station[ru.DISPENSERS], current_time)
+
+
+def minutes_to_str(minutes: int) -> str:
+
+    """
+    Converts minutes from midnight to the string HH:MM.
+        Args:
+            minutes (int): The number of minutes.
+        Returns:
+            str: Time in the 'HH' format:MM.'
+    """
+
+    h = (minutes // 60) % 24
+    m = minutes % 60
+    return f"{h:02d}:{m:02d}"
+
+
+def print_state(dispensers: list[dict], current_time: int) -> None:
+
+    """
+    Displays the current state of all gas stations.
+    Args:
+        dispensers (list[dict]): A list of gas stations.
+        current_time (int): The current time (not used in the output,
+            but passed for consistency).
+    Returns:
+        None
+    """
+
+    for d in dispensers:
+        marks_str = ' '.join(d[ru.MARKS])
+        total_clients = len(d[ru.QUEUE]) + (1 if d[ru.CURRENT_CLIENT] else 0)
+        stars = '*' * total_clients
+        print(f"{ru.AUTON_NUM} {d[ru.NUM]} {ru.MAX_LOLOL} {d[ru.MAX_QUEUE]} {ru.FUEL_TYPE} {marks_str} ->{stars}")
+    print()
+
+
+def log_arrival(current_time: int, client: dict, dispenser: dict) -> None:
+
+    """
+    Displays a message about the customer's arrival and queuing.
+    Args:
+        current_time (int): The time of the event.
+        client (dict): The client's dictionary.
+        dispenser (dict): The dictionary of the gas station.
+    Returns:
+        None
+    """
+
+    time_str = minutes_to_str(current_time)
+    print(f"{ru.IN} {time_str} {ru.NEW_CLIENT} {time_str} {client[ru.MARK]} \
+{client[ru.LITERS]} {client[ru.SERVICE_TIME]} "
+          f"{ru.STAND}{dispenser[ru.NUM]}")
+
+
+def log_departure(current_time: int, client: dict, dispenser: dict) -> None:
+
+    """
+    Displays a message about the completion of refueling.
+    Args:
+        current_time (int): The time of the event.
+        client (dict): The client's dictionary.
+        dispenser (dict): The dictionary of the gas station.
+    Returns:
+        None
+    """
+
+    time_str = minutes_to_str(current_time)
+    arrival_str = minutes_to_str(client[ru.ARRIVAL_TIME])
+    print(f"{ru.IN} {time_str} {ru.CLIENT} {arrival_str} {client[ru.MARK]} \
+{client[ru.LITERS]} {client[ru.SERVICE_TIME]} "
+          f"{ru.DONE}")
+
+
+def log_reject(current_time: int, client: dict) -> None:
+
+    """
+    Displays a rejection message (the customer left without refueling).
+    Args:
+        current_time (int): The time of the event.
+        client (dict): The client's dictionary.
+    Returns:
+        None
+    """
+
+    time_str = minutes_to_str(current_time)
+    print(f"{ru.IN} {time_str} {ru.NEW_CLIENT} {time_str} {client[ru.MARK]} \
+{client[ru.LITERS]} {client[ru.SERVICE_TIME]} "
+          f"{ru.UNDONE}")
+
+
+def print_final_report(station: dict) -> None:
+
+    """
+    Displays the final statistics for the day.
+    Args:
+        station (dict): Gas station status dictionary.
+    Returns:
+        None
+    """
+
+    print("\n" + "="*50)
+    print(ru.FINAL)
+    print('='*50)
+
+    print(ru.SOLD)
+    for mark, liters in station[ru.SOLD_LITERS].items():
+        print(f"  {mark}: {liters}{ru.L}")
+
+    total_revenue = station[ru.TOTAL_REVENUE]
+    print(f"\n{ru.TOTAL} {total_revenue:.2f}{ru.RUB}")
+
+    print(f"\n{ru.CLIENTS_PASS} {station[ru.REJECTED]}")
+    print("="*50)
+
+
+def simulate(stations_file: str, requests_file: str) -> None:
+
+    """
+    The main function of modeling.
+    Args:
+        stations_file (str): The name of the file with the configuration
+            of the machines.
+        requests_file (str): The name of the request file.
+    Returns:
+        None
+    """
+
+    dispensers = load_stations(stations_file)
+    requests = load_requests(requests_file)
+
+    station = {
+        ru.DISPENSERS: dispensers,
+        ru.TOTAL_REVENUE: 0.0,
+        ru.SOLD_LITERS: {mark: 0 for mark in PRICES},
+        ru.REJECTED: 0
+    }
+
+    req_index = 0
+    total_minutes = 24 * 60
+
+    for current_time in range(total_minutes):
+        for d in station[ru.DISPENSERS]:
+            if d[ru.CURRENT_CLIENT] and d[ru.END_TIME] == current_time:
+                process_departure(station, d, current_time)
+
+        while req_index < len(requests) and \
+                requests[req_index][ru.TIME] == current_time:
+            client_raw = requests[req_index]
+            process_arrival(station, client_raw, current_time)
+            req_index += 1
+
+    print_final_report(station)
+
+
+if __name__ == '__main__':
+    simulate('stations.txt', 'input.txt')
